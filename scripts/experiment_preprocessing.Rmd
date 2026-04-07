@@ -1,0 +1,538 @@
+---
+title: "Preprocessing of experiment da"
+author: "Sidhu, Woodin, Perlman, Winter"
+date: "2026-04-06"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This script preprocesses the experimental data to get it in shape for the Bayesian models.
+
+```{r message = FALSE}
+library(tidyverse)
+```
+
+Load data:
+
+```{r message = FALSE}
+E1 <- read_csv('../data/E1_raw.csv')
+E2 <- read_csv('../data/E2_raw.csv')
+
+# Show 5 random rows each:
+
+sample_n(E1, 5) |> print(width = Inf)
+sample_n(E2, 5) |> print(width = Inf)
+```
+
+Load item properties (to be used for both experiments):
+
+```{r message = FALSE}
+items <- read_csv('../data/item_properties.csv')
+
+# POS not needed as that's already in the main tibble (`WordClass`):
+
+items <- items |> select(-POS)
+
+# Make column names lowercase:
+
+colnames(items) <- str_to_lower(colnames(items))
+
+# Show 10 random rows:
+
+sample_n(items, 10)
+```
+
+We'll use this as the standard fill color:
+
+```{r}
+default_col <- 'darkorchid4'
+```
+
+
+# Overview (both experiments)
+
+## N participants
+
+How many participants in each experiment? (Save this in vectors for % participant exclusions later)
+
+```{r}
+E1_ppts <- E1 |> count(participant) |> nrow()
+E2_ppts <- E2 |> count(participant) |> nrow()
+
+# Show:
+
+E1_ppts
+E2_ppts
+```
+
+## Actual trials only
+
+Check the `trials.ran` variable:
+
+```{r}
+E1 |> count(trials.ran)
+E2 |> count(trials.ran)
+```
+
+**Note**: To ask David: What are the `NA`s here? General clarification on what this variable is to describe it more clearly in the script.
+
+Keep only the ones with `trials.ran == 1`, which are the ones where stimuli were actually presented:
+
+```{r}
+E1 <- filter(E1, trials.ran == '1')
+E2 <- filter(E2, trials.ran == '1')
+```
+
+## N trials
+
+For reporting % data exclusion, we want to compute the total data before data exclusion, which is all rows minus the attention checks:
+
+```{r}
+E1_total <- E1 |> filter(WordClass != 'AttentionCheck') |> nrow()
+E2_total <- E2 |> filter(WordClass != 'AttentionCheck') |> nrow()
+
+# Show:
+
+E1_total
+E2_total
+```
+
+Close to 6,000 trials each. We'll also create `_running_total` variables that will be updated with the current total so that we can compute both % of original data and % of last exclusion at each step.
+
+```{r}
+E1_running_total <- E1_total   # will be updated
+E2_running_total <- E2_total   # will be updated
+```
+
+# Data wrangling: Experiment 1
+
+## Attention checks
+
+How many and which participants failed at least one of the attention checks?
+
+```{r}
+E1_fails <- E1 |> 
+  filter(WordClass == 'AttentionCheck' & key_resp_2.corr == 0) |> 
+  pull(participant)
+
+# Show:
+
+E1_fails
+length(E1_fails) / E1_ppts * 100
+nrow(filter(E1, participant %in% E1_fails, WordClass != 'AttentionCheck')) / E1_total * 100
+```
+
+3.25% of all participants and 2.64% of all data.
+
+Exclude these participants (ids stored in `E1_fails` vector from last chunk):
+
+```{r}
+E1 <- E1 |>
+  filter(!participant %in% E1_fails)
+```
+
+Now we can get rid of the attention check rows in the main data:
+
+```{r}
+E1 <- E1 |> filter(WordClass != 'AttentionCheck')
+
+# Update running total:
+
+E1_running_total <- nrow(E1)
+```
+
+## Incomplete
+
+Check how many trials each participant completed and whether there's some who didn't complete the experiment:
+
+```{r}
+E1 |> 
+  count(participant) |> 
+  count(n)
+```
+
+One participant has only 10 trials. Who is this?
+
+```{r}
+E1 |> 
+  count(participant) |> 
+  filter(n == 10)
+```
+
+Participant 90. Let's exclude them:
+
+```{r}
+# How much is that from the current E1 total and the overall total trials?
+
+nrow(filter(E1, participant == 90)) / E1_running_total * 100
+nrow(filter(E1, participant == 90)) / E1_total * 100
+
+# Exclude:
+
+E1 <- filter(E1, participant != 90)
+```
+
+**Note**: To ask David: Did we pre-register this? See below however that it doesn't matter in this case because another exclusion criterion (<80% same responses) captures the same participant, see below section "Same key".
+
+How many trials do we now have per participant?
+
+```{r}
+E1 |> 
+  count(participant)
+```
+
+48 trials per participant.
+
+## Same key
+
+We pre-registered to exclude participants who would press the same key >80% of the time.
+
+Let's look at the distribution of % key responses.
+
+```{r fig.width = 6, fig.height = 3.6}
+E1 |> 
+  count(participant, key_resp_2.keys) |> 
+  mutate(prop_key = n / 48) |> 
+  ggplot(aes(x = prop_key)) +
+  geom_histogram() +
+  theme_classic()
+```
+
+Looks like no participant has >80% responses. Check this more precisely:
+
+```{r}
+E1 |> 
+  count(participant, key_resp_2.keys) |> 
+  mutate(prop_key = n / 48) |> 
+  filter(prop_key > 0.8 | prop_key < 0.2)
+```
+
+No participant has >80% same responses. This differs from David's original script because it turns out that this participant was also the one who didn't complete the experiment, participant 90.
+
+```{r}
+filter(E1, participant == '90')
+```
+
+Indeed, this participant is not part of the data anymore. This was the one with just 10 trials, which was all the same key.
+
+## Response times
+
+We pre-registered to exclude participants with average response times less than 500ms.
+
+First, let's check the RT variable ...
+
+```{r}
+E1 |> 
+  count(key_resp_2.rt) |> 
+  sample_n(20)   # 20 random rows
+```
+
+... and make it numeric (renamed into `rt`):
+
+```{r}
+E1 <- E1 |> mutate(rt = as.numeric(key_resp_2.rt)) |> select(-key_resp_2.rt)
+```
+
+Compute the by-participant averages and show distribution:
+
+```{r fig.width = 6, fig.height = 3.6}
+E1_RT_avgs <- E1 |> 
+  group_by(participant) |> 
+  summarize(rt_m = mean(rt))
+
+# Show distribution:
+
+E1_RT_avgs |> 
+  ggplot(aes(x = rt_m)) +
+  geom_density(fill = default_col, alpha = 0.5) +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') + # 500ms threshold
+  theme_classic()
+```
+
+Find the corresponding participant IDs:
+
+```{r}
+fast_ppts <- E1_RT_avgs |> 
+  filter(rt_m <= 0.5) |> 
+  pull(participant)
+
+# Check who they are:
+
+fast_ppts
+```
+
+Two participants are that fast: `123` and `40`.
+
+Exclude them, check % and update totals:
+
+```{r}
+E1 <- filter(E1, !participant %in% fast_ppts)
+
+# Check:
+
+(1 - nrow(E1) / E1_total) * 100
+(1 - nrow(E1) / E1_running_total) * 100
+
+# Update running total:
+
+E1_running_total <- nrow(E1)
+```
+
+**Note**: Check percentages.
+
+## Select relevant columns
+
+Rename relevant columns into simpler variables and reduce tibble to just those columns:
+
+```{r}
+E1 <- E1 |> 
+  rename(word = Word, word_class = WordClass,
+         acc = key_resp_2.corr) |> 
+  select(participant, word, word_class, rt, acc)
+```
+
+## Merge item properties
+
+Merge the item properties into the E1 tibble, reorder and rename columns:
+
+```{r}
+E1 <- E1 |> 
+  left_join(items, by = c('word' = 'romaji')) |> 
+  select(participant:word_class, rating:quantile, rt:acc) |> 
+  rename(icon = rating)
+```
+
+## Create z-scored variables
+
+Create z-scored variables:
+
+```{r}
+E1 <- E1 |> 
+  mutate(icon_z = icon - mean(icon),
+         icon_z = icon_z / sd(icon_z),
+         rt_z = rt - mean(rt),
+         rt_z = rt_z / sd(rt_z)) |> 
+  relocate(icon_z, .after = icon) |> 
+  relocate(rt_z, .after = icon)
+```
+
+## Save outside R
+
+Show and save:
+
+```{r}
+E1
+write_csv(E1, '../data/E1_processed.csv')
+```
+
+# Data wrangling: Experiment 2
+
+## Create accuracy variable
+
+For E2, we need to manually create an accuracy variable:
+
+```{r}
+E2 <- E2 |> 
+  mutate(acc = case_when(key_resp_3.keys == CorrectKey ~ '1',
+                         key_resp_3.keys != CorrectKey ~ '0'))
+
+# Check:
+
+select(E2, key_resp_3.keys, CorrectKey, acc)
+```
+
+Looks good.
+
+## Attention checks
+
+Anybody who failed attention checks?
+
+```{r}
+E2_fails <- E2 |> 
+  filter(WordClass == 'AttentionCheck' & acc == 0) |> 
+  pull(participant)
+
+# Show:
+
+E2_fails
+length(E2_fails) / E2_ppts * 100
+nrow(filter(E2, participant %in% E2_fails, WordClass != 'AttentionCheck')) / E2_total * 100
+```
+
+E1: 0.83% of all participants and 0.83% of all data.
+
+Exclude these participants (ids stored in `E2_fails` vector from last chunk):
+
+```{r}
+E2 <- E2 |>
+  filter(!participant %in% E2_fails)
+```
+
+Now we can get rid of the attention check rows in the main data:
+
+```{r}
+E2 <- E2 |> filter(WordClass != 'AttentionCheck')
+
+# Update running total:
+
+E2_running_total <- nrow(E2)
+```
+
+## Incomplete
+
+## Not completed
+
+Check how many trials each participant completed and whether there's some who didn't complete the experiment:
+
+```{r}
+E2 |> 
+  count(participant) |> 
+  count(n)
+```
+
+They all completed it all - no need to exclude anyone based on this criterion.
+
+## Same key
+
+We pre-registered to exclude participants who would press the same key >80% of the time.
+
+Let's look at the distribution of % key responses.
+
+```{r fig.width = 6, fig.height = 3.6}
+E2 |> 
+  count(participant, key_resp_3.keys) |> 
+  mutate(prop_key = n / 48) |> 
+  ggplot(aes(x = prop_key)) +
+  geom_histogram() +
+  theme_classic()
+```
+
+Looks like there might be one or two participants with >80% responses. Check this more precisely:
+
+```{r}
+E2 |> 
+  count(participant, key_resp_3.keys) |> 
+  mutate(prop_key = n / 48) |> 
+  filter(prop_key > 0.8 | prop_key < 0.2)
+```
+
+Actually no, so we're good here.
+
+## Response times
+
+Same as for E1, pre-registered <500ms (participant average) exclusion criterion:
+
+First, let's check the RT variable ...
+
+```{r}
+E2 |> 
+  count(key_resp_3.rt) |> 
+  sample_n(20)   # 20 random rows
+```
+
+... and make it numeric (renamed into `rt`):
+
+```{r}
+E2 <- E2 |> mutate(rt = as.numeric(key_resp_3.rt)) |> select(-key_resp_3.rt)
+```
+
+Compute the by-participant averages and show distribution:
+
+```{r fig.width = 6, fig.height = 3.6}
+E2_RT_avgs <- E2 |> 
+  group_by(participant) |> 
+  summarize(rt_m = mean(rt))
+
+# Show distribution:
+
+E2_RT_avgs |> 
+  ggplot(aes(x = rt_m)) +
+  geom_density(fill = default_col, alpha = 0.5) +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') + # 500ms threshold
+  theme_classic()
+```
+
+Find the corresponding participant IDs:
+
+```{r}
+fast_ppts <- E2_RT_avgs |> 
+  filter(rt_m <= 0.5) |> 
+  pull(participant)
+
+# Check who they are:
+
+fast_ppts
+```
+
+This time only one participant: `66`.
+
+Exclude them, check % and update totals:
+
+```{r}
+E2 <- filter(E2, !participant %in% fast_ppts)
+
+# Check:
+
+(1 - nrow(E2) / E2_total) * 100
+(1 - nrow(E2) / E2_running_total) * 100
+
+# Update running total:
+
+E2_running_total <- nrow(E1)
+```
+
+**Note**: Check percentages.
+
+## Select relevant columns
+
+Rename relevant columns into simpler variables and reduce tibble to just those columns:
+
+```{r}
+E2 <- E2 |> 
+  rename(word = Word, word_class = WordClass) |> 
+  select(participant, word, word_class, rt, acc)
+```
+
+## Merge item properties
+
+Merge the item properties into the E1 tibble, reorder and rename columns:
+
+```{r}
+E2 <- E2 |> 
+  left_join(items, by = c('word' = 'romaji')) |> 
+  select(participant:word_class, rating:quantile, rt:acc) |> 
+  rename(icon = rating)
+```
+
+## Create z-scored variables
+
+Create z-scored variables:
+
+```{r}
+E2 <- E2 |> 
+  mutate(icon_z = icon - mean(icon),
+         icon_z = icon_z / sd(icon_z),
+         rt_z = rt - mean(rt),
+         rt_z = rt_z / sd(rt_z)) |> 
+  relocate(icon_z, .after = icon) |> 
+  relocate(rt_z, .after = icon)
+```
+
+## Save outside R
+
+Show and save:
+
+```{r}
+E2
+write_csv(E2, '../data/E2_processed.csv')
+```
+

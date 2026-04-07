@@ -1,0 +1,1578 @@
+---
+title: "Analysis of experiment data"
+author: "Sidhu, Woodin, Perlman, Winter"
+date: "2026-04-06"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This script presents an analysis of the experimental data. First descriptive statistics and visualizations for both, then Bayesian models.
+
+Load libraries:
+
+```{r message = FALSE}
+library(tidyverse)
+library(brms)
+```
+
+Load data:
+
+```{r message = FALSE}
+E1 <- read_csv('../data/E1_processed.csv')
+E2 <- read_csv('../data/E2_processed.csv')
+
+# Show:
+
+sample_n(E1, 10)
+sample_n(E2, 10)
+```
+
+Load item data as well:
+
+```{r message = FALSE}
+items <- read_csv('../data/item_properties.csv')
+
+colnames(items) <- str_to_lower(colnames(items))
+```
+
+We'll use this as the standard fill color again:
+
+```{r}
+default_col <- 'darkorchid4'
+```
+
+# Merge files
+
+For easier processing, we'll merge both into the same file separate by form-to-meaning (E1) and meaning-to-form (E2) matching.
+
+```{r}
+both <- bind_rows(E1, E2)
+
+# Task identifier:
+
+both$experiment <- c(rep('form-to-meaning (E1)', nrow(E1)),
+                     rep('meaning-to-form (E2)', nrow(E2)))
+```
+
+# Descriptive statistics
+
+## Average rt
+
+Check the average RT per experiment:
+
+```{r}
+both |> 
+  group_by(experiment) |> 
+  summarize(rt_mean = mean(rt))
+```
+
+They took about 2 seconds to respond.
+
+## Overall accuracy (grand mean)
+
+First, what's the overall accuracy?
+
+```{r}
+both |> 
+  group_by(experiment) |> 
+  summarize(acc_mean = mean(acc))
+```
+
+## Variation by participants
+
+Check the mean accuracy of participants. First, create a tibble of the participant averages:
+
+```{r}
+acc_ppt_avgs <- both |> 
+  group_by(experiment, participant) |> 
+  summarize(acc_mean = mean(acc)) |> 
+  ungroup(experiment)
+```
+
+What are the lowest and highest participant accuracy per experiment?
+
+```{r}
+acc_ppt_avgs |> 
+  group_by(experiment) |> 
+  filter(acc_mean %in% range(acc_mean))
+```
+
+The highest accuracy any participant achieved in experiment 1 was 75%, the lowest was 33%.
+
+In experiment 2, the highest accuracy was 72.9%, and 4 participant shared the spot of the lowest accuracy with 39.6%.
+
+Save these means for plotting:
+
+```{r}
+E1_mean <- mean(E1$acc)
+E2_mean <- mean(E2$acc)
+
+# In tibble:
+
+both_means <- both |> 
+  group_by(experiment) |> 
+  summarize(acc_mean = mean(acc))
+```
+
+Plot the distribution of this:
+
+```{r}
+acc_ppt_avgs |> 
+  ggplot(aes(x = acc_mean)) +
+  geom_density(fill = default_col, alpha = 0.5) +
+  geom_vline(data = both_means,
+             mapping = aes(xintercept = acc_mean),
+             linetype = 'dashed') +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 8)) +
+  facet_wrap(~experiment) +
+  theme_classic()
+```
+
+## Variation by items
+
+Create tibble that contains mean accuracy by items:
+
+```{r}
+acc_item_avgs <- both |> 
+  group_by(experiment, word, word_class, icon) |> 
+  summarize(acc_mean = mean(acc)) |> 
+  ungroup(experiment)
+```
+
+What are the lowest and highest item accuracy per experiment?
+
+```{r}
+acc_item_avgs |> 
+  group_by(experiment) |> 
+  filter(acc_mean %in% range(acc_mean))
+```
+
+The highest accuracy was the ideophone "garan" in Experiment 1, and the noun "moji" in Experiment 2.
+
+Plot the distribution of this:
+
+```{r}
+acc_item_avgs |> 
+  ggplot(aes(x = acc_mean)) +
+  geom_density(fill = default_col, alpha = 0.5) +
+  geom_vline(data = both_means,
+             mapping = aes(xintercept = acc_mean),
+             linetype = 'dashed') +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 8)) +
+  facet_wrap(~experiment) +
+  theme_classic()
+```
+
+## Word class
+
+Check descriptive accuracy by word class:
+
+```{r}
+both |> 
+  group_by(experiment, word_class) |> 
+  summarize(acc_mean = mean(acc))
+```
+
+## Iconicity
+
+First, let's check average accuracy by iconicity quantile:
+
+```{r}
+both |> 
+  group_by(experiment, quantile) |> 
+  summarize(acc_mean = mean(acc))
+```
+
+No consistent relationship.
+
+Second, check descriptive correlations between average iconicity and average accuracy on a by-item level:
+
+```{r}
+with(filter(acc_item_avgs, experiment == 'form-to-meaning (E1)'),
+     cor.test(icon, acc_mean))
+
+with(filter(acc_item_avgs, experiment == 'meaning-to-form (E2)'),
+     cor.test(icon, acc_mean))
+```
+
+Average correlation across both experiments:
+
+```{r}
+acc_item_avgs_both <- both |> 
+  group_by(word, icon) |> 
+  summarize(acc_mean = mean(acc))
+
+with(acc_item_avgs_both,
+     cor.test(icon, acc_mean))
+```
+
+
+Plot these correlations with quick-and-dirty frequentist linear model lines:
+
+```{r}
+acc_item_avgs |> 
+  ggplot(aes(x = icon, y = acc_mean)) +
+  geom_smooth(col = default_col,
+              fill = default_col,
+              alpha = 0.5,
+              method = 'lm') +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~experiment) +
+  theme_classic()
+```
+
+
+
+# Models
+
+## Prior specification
+
+Due to the high similarity of both experiments, we can use the same priors for both.
+
+Previously, David used a `normal(0, 0.5)` for the intercept, and a `cauchy(0, 2.5)` prior for the slope, the latter in line with the recommendations for sensible logistic regression default weakly informative priors from the Gelman et al. (2008).
+
+Following the more precise prior reasoning in the meta-analysis, and also for comparability with the meta-analysis, we want to fit better, and more theoretically motivated priors than just that. It also is the case that the intercept prior is very wide:
+
+```{r}
+plogis(-0.5);plogis(+0.5)   # 68% of all plausible intercepts
+plogis(-1);plogis(+1)       # 95% of all plausible intercepts
+```
+
+The prior motivation for the meta-analysis was done for the phonetic symbolism literature, which largely used antonyms. In this study, we also include ideophones. This, however, makes little difference: after all, Dingemanse et al. (2016) found the force-choice guessability of ideophones to be *at most* ~57% on average...
+
+... so assuming an intercept focused on 50% with the same sigma that we determined for the meta-analysis is fully appropriate here. This intercept would be open with the accuracy to be as high as in the Dingemanse et al. study that only included ideophones; given that we also have 3/4 of the data being non-ideophones, we don't expect the average across the experiment to be that high, so the slightly lower probability mass of the meta-analysis prior for the intercept for ~60% is appropriate.
+
+Another approach would be to use the average resulting from the meta-analysis as prior for the experiments. We'll perform that analysis too, but only after the more agnostic prior that's focused on 50% accuracy, as otherwise one could accuse us of cheating.
+
+So again, let's find the sigma value that's 40%/60% accuracy for the 95% interval of a t-distribution with degrees of freedom = 3.
+
+```{r}
+sigma <- qlogis(0.6) / qt(0.975, df = 3)
+
+# Show:
+
+sigma
+```
+
+The iconicity ratings come from Thompson et al. (2020), who used a -5 to +5 iconicity rating scale following Perry et al. (2015). As is often the case using such a scale and the nominal fit heuristic exposed by Sutherland and Cimpian (2015), participants mostly used the positive end of the scale. This is also because the concept of non-arbitrariness is ill-defined, see also Motamedi et al. (2019) and Winter et al. (2023).
+
+Here's a look at the actual item properties in terms of iconicity for both the standardized and non-standardized:
+
+```{r}
+# Raw scale:
+
+range(both$icon)
+
+# Standardized scale:
+
+range(both$icon_z)
+```
+
+Let's briefly visualize the iconicity ratings across items on the standardized scale to get an idea of the spread of this variable. Since the items are the same across experiments we need to only use one experiment:
+
+```{r}
+both |> 
+  distinct(word, icon, icon_z) |> 
+  ggplot(aes(x = icon_z)) +
+  geom_density(fill = default_col, alpha = 0.5) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 0.5)) +
+  theme_classic()
+```
+
+All else being equal, it would seem that if iconicity increased by one standard deviation, and accuracy increased by 10%, that would be a big effect of iconicity - for a fully-fledged language with conventional words that have already undergone de-iconicization.
+
+Now, for word class, we can use the difference between the phonetic symbolism experiments and Dingemanse et al. (2016) as a good baseline. The latter has ideophones and the average is at most 57%. To allow for possibly slightly more accurate ideophones, we'll say that the 95% range is set to 60%. If there's a lot of evidence in the data for the ideophone coefficient to be high, we could still find that effect (our sample size is decent), but all else being equal we're skeptical of effects *that* high.
+
+So, in this rare case, it actually makes sense to specify the same sigma for *both* the continuous and the categorical beta slope, since our expectations for 1 unit change (continuous) or pairwise differences (categorical) are similar.
+
+The standard deviations will be a bit more tricky. After a bit of experimenting with different values, I arrived at SD = 0.25 for item random effect SD, and SD = 0.1 for participant random effect SD.
+
+The item effect SD of 0.25 corresponds to saying that a 95% upper bound of the SD value would be:
+
+```{r}
+item_sd_upper <- qt(0.975, df = 3) * 0.25
+
+item_sd_upper
+```
+
+... which applying that to the raw probability scale suggests that 95% of all items would lie between:
+
+```{r}
+plogis(c(-1.96 * item_sd_upper, 1.96 * item_sd_upper))
+```
+
+And that seems very sensible. It's quite agnostic but open to *some few* items still being as accurate as 80%. The actual SD is likely going to be lower given that these are mostly conventional words that cannot be guessed easily and we expect the range of item variation to be quite constrained closer to 50%, but I don't want to induce too much shrinkage to artificially bias uncertainty downwards.
+
+Another way of thinking this is that Cwiek et al. (2021) obtained an item SD of 1.12, which is higher than what I propose here, but that study was conducted on raw iconic vocalizations rather than conventionalized words. So 0.8 seems like a decent value given this other study as well.
+
+Then for participant sd, I'll choose a smaller value, as we have found in Cwiek et al. (2021) that item SD > participant SD. 0.10 seems like a nice round number that implies the following:
+
+```{r}
+ppt_sd_upper <- qt(0.975, df = 3) * 0.1
+
+ppt_sd_upper  # SD value
+plogis(c(-1.96 * ppt_sd_upper, 1.96 * ppt_sd_upper)) # 95% of all participants fall within
+```
+
+This seems sensible. It would be quite unexpected if participants with no knowledge of Japanese all of a sudden could guess words much better than that.
+
+Finally, for the random slopes we want to err on the side of weak regularization. These values will be smaller because we don't really expect that one participant is much better due to iconicity or word class than another, but we don't want them to be too small to induce too much shrinkage for the random slope variation. `0.15` seems like a good value here. If per 95% heuristic (using heuristic for normal, but for t-distribution even more open), this would imply an SD of 0.3 for the 95% upper bound.
+
+For the random effects correlation, we use the standard LKJ-2 distribution.
+
+So all together:
+
+With all of this in mind, let's use these priors:
+
+```{r}
+exp_priors <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                prior(student_t(3, 0, 0.1274067), class = 'b'), # same for continuous and categorical makes sense in this specific case
+                prior(student_t(3, 0, 0.25), class = 'sd', group = 'word'),
+                prior(student_t(3, 0, 0.1), class = 'sd', group = 'participant'), # covers both intercept and slope, similar expectation (see above)
+                prior(lkj(2), class = 'cor'))
+```
+
+Check that we've covered all:
+
+```{r}
+get_prior(acc ~ 1 + icon_z + word_class +
+            (1 + icon_z + word_class|participant) +
+            (1|word),
+          data = E1,
+          family = bernoulli(link = 'logit'))
+```
+
+We don't need to specify separate `word_classMim` etc. random slopes since our expectations for intercept and slope are similar, logit SD = `0.1` each.
+
+## Reference level
+
+We'll use `Noun` as the reference level as prior research suggest that this should be lowest in iconicity (e.g., Perry et al. 2015, Winter et al. 2017). Then all coefficients are deviations from that lowest level, i.e., adjective v noun, verbs v noun and ideophones v noun.
+
+```{r}
+E1 <- mutate(E1,
+             word_class = factor(word_class),
+             word_class = relevel(word_class, ref = 'Noun'))
+
+E2 <- mutate(E2,
+             word_class = factor(word_class),
+             word_class = relevel(word_class, ref = 'Noun'))
+
+both <- mutate(both,
+               word_class = factor(word_class),
+               word_class = relevel(word_class, ref = 'Noun'))
+```
+
+## Experiment 1
+
+### Fit models
+
+Fit the model. First, separate for each experiment. Experiment 1:
+
+```{r eval = FALSE}
+E1_mdl <- brm(acc ~ 1 + icon_z + word_class +
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E1,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1, # 48k for stable bayes factors
+              seed = 42)
+
+# No iconicity null model
+
+E1_no_icon_mdl <- brm(acc ~ 1 + word_class +
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E1,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1,
+              seed = 42)
+
+# No word class null model:
+
+E1_no_word_class_mdl <- brm(acc ~ 1 + icon_z + 
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E1,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1,
+              seed = 42)
+
+# Save:
+
+saveRDS(E1_mdl, '../models/E1_mdl.rds')
+saveRDS(E1_no_icon_mdl, '../models/E1_no_icon_mdl.rds')
+saveRDS(E1_no_word_class_mdl, '../models/E1_no_word_class_mdl.rds')
+```
+
+Load:
+
+```{r eval = TRUE}
+E1_mdl <- readRDS('../models/E1_mdl.rds')
+E1_no_icon_mdl <- readRDS('../models/E1_no_icon_mdl.rds')
+E1_no_word_class_mdl <- readRDS('../models/E1_no_word_class_mdl.rds')
+```
+
+### Model diagnostics
+
+Let's perform posterior predictive simulations to assess whether we have ballpark identified a plausible data-generating process:
+
+```{r}
+pp_check(E1_mdl, ndraws = 100)
+pp_check(E1_mdl, ndraws = 100, type = 'ecdf_overlay')
+pp_check(E1_mdl, ndraws = 100, type = 'bars')
+```
+
+Check neff ratio:
+
+```{r}
+# neff_ratio(E1_mdl)
+```
+
+**Note**: Note sure why this doesn't work. But we have massive number of effective sample sizes anyway (see below).
+
+### Bayes factor comparisons
+
+Bayes factor comparisons. First, iconicity effect for Experiment 1- three times to assess BF variability:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(E1_no_icon_mdl, E1_mdl)
+BF_2 <- bayes_factor(E1_no_icon_mdl, E1_mdl)
+BF_3 <- bayes_factor(E1_no_icon_mdl, E1_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/E1_no_icon_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/E1_no_icon_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/E1_no_icon_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/E1_no_icon_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/E1_no_icon_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/E1_no_icon_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+Second, word class effect for Experiment 1:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(E1_no_word_class_mdl, E1_mdl)
+BF_2 <- bayes_factor(E1_no_word_class_mdl, E1_mdl)
+BF_3 <- bayes_factor(E1_no_word_class_mdl, E1_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/E1_no_word_class_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/E1_no_word_class_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/E1_no_word_class_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/E1_no_word_class_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/E1_no_word_class_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/E1_no_word_class_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+### LOO-CV comparisons
+
+Create loo objects for E1:
+
+```{r eval = FALSE}
+E1_loo <- loo(E1_mdl, moment_match = TRUE)
+E1_no_icon_loo <- loo(E1_no_icon_mdl, moment_match = TRUE)
+E1_no_word_class_loo <- loo(E1_no_word_class_mdl, moment_match = TRUE)
+
+# Save:
+
+saveRDS(E1_loo, '../models/loo_cv_objects/E1_loo.rds')
+saveRDS(E1_no_icon_loo, '../models/loo_cv_objects/E1_no_icon_loo.rds')
+saveRDS(E1_no_word_class_loo, '../models/loo_cv_objects/E1_no_word_class_loo.rds')
+```
+
+Read:
+
+```{r eval = TRUE}
+E1_loo <- readRDS('../models/loo_cv_objects/E1_loo.rds')
+E1_no_icon_loo <- readRDS('../models/loo_cv_objects/E1_no_icon_loo.rds')
+E1_no_word_class_loo <- readRDS('../models/loo_cv_objects/E1_no_word_class_loo.rds')
+```
+
+LOO-compare:
+
+```{r}
+# Full versus no icon:
+
+loo_compare(E1_loo, E1_no_icon_loo)
+
+# Full versus no word class:
+
+loo_compare(E1_loo, E1_no_word_class_loo)
+```
+
+Both factors do not lead to a meaningful change in estimated predictive performance.
+
+### Interpret model
+
+Look at the model:
+
+```{r}
+E1_mdl
+```
+
+All 95% intervals quite firmly overlap with zero.
+
+### Posterior probabilities
+
+Compute posterior probabilities for directions (e.g., p(b>0)):
+
+```{r}
+hypothesis(E1_mdl, 'Intercept > 0') # meaningful here as it is the average guessability
+hypothesis(E1_mdl, 'icon_z < 0')
+hypothesis(E1_mdl, 'word_classAdj > 0')
+hypothesis(E1_mdl, 'word_classMim < 0')
+hypothesis(E1_mdl, 'word_classVerb > 0')
+```
+
+All very inconclusive, except for intercept.
+
+The mimetic words are *worse* than the other word classes anyway. The expectation was that they are better. We'll test for this for E2 as well, and it makes sense to use the meta-analytic average for non-antonym "phonetic symbolism" as a baseline expectation for what is a ROPE.
+
+That is, if ideophones are not better than 53.0% - which was obtained for normal words that weren't perceived to be iconic, then there's really nothing special about them from a guessability perspective.
+
+To compute this posterior probability, we need to find the logit value that corresponds to 53%.
+
+```{r}
+logit_val <- log((0.53) / (1 - 0.53))
+
+# Show:
+
+logit_val
+
+# Check:
+
+plogis(logit_val)
+```
+
+Then, we need to calculate the prediction for mimetics and see how many of the posterior samples are above this logit value.
+
+```{r}
+hypothesis(E1_mdl, '(Intercept + word_classMim) > 0.1201443')
+```
+
+Probability is below 0.22, which makes sense given that mimetics had a negative coefficient. So yeah, they're really not guessable.
+
+Compute the posterior probability that the item SD is bigger than the participant SD. For this `hypothesis()` isn't set up, so we need to get the draws by hand:
+
+```{r}
+# Extract posterior samples:
+
+E1_posts <- as_draws_df(E1_mdl) |> 
+  select(sd_participant__Intercept, sd_word__Intercept)
+
+# Show how many of one are more than the other:
+
+sum(E1_posts$sd_word__Intercept > E1_posts$sd_participant__Intercept) / nrow(E1_posts)
+```
+
+So, a posterior probability of 1.0 that there's more variation by words than by people.
+
+## Experiment 2
+
+### Fit models
+
+Fit models for E2:
+
+```{r eval = FALSE}
+E2_mdl <- brm(acc ~ 1 + icon_z + word_class +
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E2,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1, # 48k for stable bayes factors
+              seed = 42)
+
+# No iconicity null model
+
+E2_no_icon_mdl <- brm(acc ~ 1 + word_class +
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E2,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1,
+              seed = 42)
+
+# No word class null model:
+
+E2_no_word_class_mdl <- brm(acc ~ 1 + icon_z + 
+                (1 + icon_z + word_class|participant) +
+                (1|word),
+              data = E2,
+              prior = exp_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1,
+              seed = 42)
+
+# Save:
+
+saveRDS(E2_mdl, '../models/E2_mdl.rds')
+saveRDS(E2_no_icon_mdl, '../models/E2_no_icon_mdl.rds')
+saveRDS(E2_no_word_class_mdl, '../models/E2_no_word_class_mdl.rds')
+```
+
+Load:
+
+```{r eval = TRUE}
+E2_mdl <- readRDS('../models/E2_mdl.rds')
+E2_no_icon_mdl <- readRDS('../models/E2_no_icon_mdl.rds')
+E2_no_word_class_mdl <- readRDS('../models/E2_no_word_class_mdl.rds')
+```
+
+### Bayes factor comparisons
+
+Bayes factor comparisons as we did for Experiment 1, but now for E2.
+
+First for iconicity:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(E2_mdl, E2_no_icon_mdl)
+BF_2 <- bayes_factor(E2_mdl, E2_no_icon_mdl)
+BF_3 <- bayes_factor(E2_mdl, E2_no_icon_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/E2_no_icon_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/E2_no_icon_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/E2_no_icon_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/E2_no_icon_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/E2_no_icon_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/E2_no_icon_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+Second, for the word class effect:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(E2_no_word_class_mdl, E2_mdl)
+BF_2 <- bayes_factor(E2_no_word_class_mdl, E2_mdl)
+BF_3 <- bayes_factor(E2_no_word_class_mdl, E2_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/E2_no_word_class_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/E2_no_word_class_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/E2_no_word_class_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/E2_no_word_class_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/E2_no_word_class_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/E2_no_word_class_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+### LOO-CV comparisons
+
+Create loo objects for E2:
+
+```{r eval = FALSE}
+E2_loo <- loo(E2_mdl, moment_match = TRUE)
+E2_no_icon_loo <- loo(E2_no_icon_mdl, moment_match = TRUE)
+E2_no_word_class_loo <- loo(E2_no_word_class_mdl, moment_match = TRUE)
+
+# Save:
+
+saveRDS(E2_loo, '../models/loo_cv_objects/E2_loo.rds')
+saveRDS(E2_no_icon_loo, '../models/loo_cv_objects/E2_no_icon_loo.rds')
+saveRDS(E2_no_word_class_loo, '../models/loo_cv_objects/E2_no_word_class_loo.rds')
+```
+
+Read:
+
+```{r eval = TRUE}
+E2_loo <- readRDS('../models/loo_cv_objects/E2_loo.rds')
+E2_no_icon_loo <- readRDS('../models/loo_cv_objects/E2_no_icon_loo.rds')
+E2_no_word_class_loo <- readRDS('../models/loo_cv_objects/E2_no_word_class_loo.rds')
+```
+
+LOO-compare:
+
+```{r}
+# Full versus no icon:
+
+loo_compare(E2_loo, E2_no_icon_loo)
+
+# Full versus no word class:
+
+loo_compare(E2_loo, E2_no_word_class_loo)
+```
+
+Both factors do not lead to a meaningful change in estimated predictive performance.
+
+### Interpret model
+
+Show the model:
+
+```{r}
+E2_mdl
+```
+
+### Posterior probabilities
+
+Compute posterior probabilities for directions (e.g., p(b>0)):
+
+```{r}
+hypothesis(E1_mdl, 'Intercept > 0') # meaningful here as it is the average guessability
+hypothesis(E1_mdl, 'icon_z > 0')
+hypothesis(E1_mdl, 'word_classAdj < 0')
+hypothesis(E1_mdl, 'word_classMim < 0')
+hypothesis(E1_mdl, 'word_classVerb > 0')
+```
+
+All very inconclusive, except for intercept.
+
+We can perform the same comparison of ideophones against a ROPE spanned by +/- `0.1201443`, the logit value corresponding to 53%, which is the non-antonym guessing accuracy from the meta-analysis.
+
+```{r}
+hypothesis(E2_mdl, '(Intercept + word_classMim) > 0.1201443')
+```
+
+Nothing to write home about.
+
+As with E1, compute the posterior probability that the item SD is bigger than the participant SD.
+
+```{r}
+# Extract posterior samples:
+
+E2_posts <- as_draws_df(E2_mdl) |> 
+  select(sd_participant__Intercept, sd_word__Intercept)
+
+# Show how many of one are more than the other:
+
+sum(E2_posts$sd_word__Intercept > E2_posts$sd_participant__Intercept) / nrow(E1_posts)
+```
+
+98.9% of all posterior samples had higher word SDs than participant SDs, which is a posterior probability of p ~ 0.99.
+
+## Experiment/task effect
+
+We'll also do an omnibus analysis combining both experiment to test whether the task leads to a change in guessing accuracy.
+
+### Prior specification
+
+Here too, we can re-use the same prior - a jump from 50% to 60% in accuracy would be remarkable. So we can re-use the same `class = b` prior as above.
+
+As the iconicity and word class variables did not play any role whatsoever above, we'll fit the model without that. For the corresponding null model without the `experiment` effect then we need to respecify the priors object without `class = b` since that model is an intercept-only model that has no slopes whatsoever.
+
+```{r}
+both_priors <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                 prior(student_t(3, 0, 0.25), class = 'sd', group = 'word'),
+                 prior(student_t(3, 0, 0.1274067), class = 'b'),
+                 prior(student_t(3, 0, 0.1), class = 'sd', group = 'unique_id'))
+
+exp_null_priors <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                     prior(student_t(3, 0, 0.25), class = 'sd', group = 'word'),
+                     prior(student_t(3, 0, 0.1), class = 'sd', group = 'unique_id'))
+```
+
+### Create unique identifiers
+
+One thing we need to be careful with is the fact that the participant ids are repeated, which means that the model will treat as a within-participants factor if we don't create unique identifiers. We can do this by simply pasting the `experiment` column together with the `participant` column.
+
+```{r}
+both <- both |> 
+  mutate(unique_id = str_c(experiment, '_', participant))
+```
+
+### Fit model
+
+Fit the combined model:
+
+```{r eval = FALSE}
+# Full model:
+
+both_mdl <- brm(acc ~ 1 + experiment +
+                (1|unique_id) +
+                (1|word),
+              data = both,
+              prior = both_priors,
+              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1, # 48k for stable bayes factors
+              seed = 42)
+
+# Null model:
+
+both_no_experiment_mdl <- brm(acc ~ 1 +
+                                (1|unique_id) +
+                                (1|word),
+                              data = both,
+                              prior = exp_null_priors,
+                              family = bernoulli(link = 'logit'),
+              
+              # MCMC settings:
+              
+              save_pars = save_pars(all = TRUE),
+              cores = 4, chains = 4,
+              warmup = 4000, iter = 16000, thin = 1, # 48k for stable bayes factors
+              seed = 42)
+
+# Save:
+
+saveRDS(both_mdl, '../models/both_mdl.rds')
+saveRDS(both_no_experiment_mdl, '../models/both_no_experiment_mdl.rds')
+```
+
+Load:
+
+```{r eval = TRUE}
+both_mdl <- readRDS('../models/both_mdl.rds')
+both_no_experiment_mdl <- readRDS('../models/both_no_experiment_mdl.rds')
+```
+
+### Bayes factor comparison
+
+Perform Bayes factor comparison of model with experiment effect against model without:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(both_no_experiment_mdl, both_mdl)
+BF_2 <- bayes_factor(both_no_experiment_mdl, both_mdl)
+BF_3 <- bayes_factor(both_no_experiment_mdl, both_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/both_no_experiment_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_no_experiment_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_no_experiment_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/both_no_experiment_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_no_experiment_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_no_experiment_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+### LOO-CV comparisons
+
+Create loo objects for the combined models:
+
+```{r eval = FALSE}
+both_loo <- loo(both_mdl, moment_match = TRUE)
+both_no_experiment_loo <- loo(both_no_experiment_mdl, moment_match = TRUE)
+
+# Save:
+
+saveRDS(both_loo, '../models/loo_cv_objects/both_loo.rds')
+saveRDS(both_no_experiment_loo, '../models/loo_cv_objects/both_no_experiment_loo.rds')
+```
+
+Read:
+
+```{r eval = TRUE}
+both_loo <- readRDS('../models/loo_cv_objects/both_loo.rds')
+both_no_experiment_loo <- readRDS('../models/loo_cv_objects/both_no_experiment_loo.rds')
+```
+
+LOO-compare:
+
+```{r}
+loo_compare(both_loo, both_no_experiment_loo)
+```
+
+### Interpret model
+
+Show the model:
+
+```{r}
+both_mdl
+```
+
+### Posterior probabilities
+
+Compute posterior probabilities of direction:
+
+```{r}
+hypothesis(both_mdl, 'Intercept > 0')
+hypothesis(both_mdl, 'experimentmeaningMtoMformE2 > 0')
+```
+
+## Combined analysis with interaction
+
+For the iconicity effect, it would be good to have the most power to estimate it, which means combining the data from both experiments - it's likely *not* going to show a consistent iconicity effect since we've already seen that E1 and E2 have iconicity effects of differing signs. More importantly, we want to formally test the interaction between the two. We also want to see whether there is any evidence for a word class effect if we have more power. If word class is included and we're now testing for the interaction, we don't want the corresponding coefficient to only be there for the noun reference level. So it makes sense to sum-code the `word_class` predictor so that things are the grand mean here:
+
+```{r}
+both <- both |> 
+  mutate(word_class_sum = factor(word_class))
+
+# Change:
+
+contrasts(both$word_class_sum) <- contr.sum(4)
+
+# Check:
+
+contrasts(both$word_class_sum)
+```
+
+The above-specified prior will be a bit more diffuse for this sum-coded predictor relative to the previously treatment-coded predictor, but that's ok- no need to really change this.
+
+We've rename the `participant` variable to `unique_id` though, so our prior object needs to reflect this as well:
+
+```{r}
+exp_priors <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                prior(student_t(3, 0, 0.1274067), class = 'b'),
+                prior(student_t(3, 0, 0.25), class = 'sd', group = 'word'),
+                prior(student_t(3, 0, 0.1), class = 'sd', group = 'unique_id'),
+                prior(lkj(2), class = 'cor'))
+```
+
+
+### Fit models
+
+Fit the models:
+
+```{r eval = FALSE}
+# Full model:
+
+both_interact_mdl <- brm(acc ~ 1 + experiment +
+                           icon_z + experiment:icon_z +
+                           word_class_sum +
+                           (1 + icon_z + word_class_sum|unique_id) +
+                           (1|word),
+                         data = both,
+                         prior = exp_priors,
+                         family = bernoulli(link = 'logit'),
+                         
+                         # MCMC settings:
+                         
+                         save_pars = save_pars(all = TRUE),
+                         cores = 4, chains = 4,
+                         warmup = 4000, iter = 16000, thin = 1,
+                         seed = 42)
+
+# Null model without interaction:
+
+both_no_interact_mdl <- brm(acc ~ 1 + experiment +
+                              icon_z + 
+                              word_class_sum +
+                              (1 + icon_z + word_class_sum|unique_id) +
+                              (1|word),
+                            data = both,
+                            prior = exp_priors,
+                            family = bernoulli(link = 'logit'),
+                            
+                            # MCMC settings:
+                            
+                            save_pars = save_pars(all = TRUE),
+                            cores = 4, chains = 4,
+                            warmup = 4000, iter = 16000, thin = 1,
+                            seed = 42)
+
+# Null model without word class effect:
+
+both_no_word_class_mdl <- brm(acc ~ 1 + experiment +
+                                icon_z + 
+                                (1 + icon_z + word_class_sum|unique_id) +
+                                (1|word),
+                              data = both,
+                              prior = exp_priors,
+                              family = bernoulli(link = 'logit'),
+              
+                              # MCMC settings:
+              
+                              save_pars = save_pars(all = TRUE),
+                              cores = 4, chains = 4,
+                              warmup = 4000, iter = 16000, thin = 1,
+                              seed = 42)
+
+# Null model without iconicity effect:
+
+both_no_icon_mdl <- brm(acc ~ 1 + experiment +
+                          word_class_sum +
+                          (1 + icon_z + word_class_sum|unique_id) +
+                          (1|word),
+                        data = both,
+                        prior = exp_priors,
+                        family = bernoulli(link = 'logit'),
+                        
+                        # MCMC settings:
+                        
+                        save_pars = save_pars(all = TRUE),
+                        cores = 4, chains = 4,
+                        warmup = 4000, iter = 16000, thin = 1,
+                        seed = 42)
+
+# Save:
+
+saveRDS(both_interact_mdl, '../models/both_interact_mdl.rds')
+saveRDS(both_no_interact_mdl, '../models/both_no_interact_mdl.rds')
+saveRDS(both_no_word_class_mdl, '../models/both_no_word_class_mdl.rds')
+saveRDS(both_no_icon_mdl, '../models/both_no_icon_mdl.rds')
+```
+
+Load models:
+
+```{r eval = TRUE}
+both_interact_mdl <- readRDS('../models/both_interact_mdl.rds')
+both_no_interact_mdl <- readRDS('../models/both_no_interact_mdl.rds')
+both_no_word_class_mdl <- readRDS('../models/both_no_word_class_mdl.rds')
+both_no_icon_mdl <- readRDS('../models/both_no_icon_mdl.rds')
+```
+
+### Bayes factors
+
+First, for the interaction:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(both_interact_mdl, both_no_interact_mdl)
+BF_2 <- bayes_factor(both_interact_mdl, both_no_interact_mdl)
+BF_3 <- bayes_factor(both_interact_mdl, both_no_interact_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/both_interact_v_no_interact_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_interact_v_no_interact_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_interact_v_no_interact_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/both_interact_v_no_interact_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_interact_v_no_interact_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_interact_v_no_interact_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+Second, the iconicity effect:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
+BF_2 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
+BF_3 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+Third, the word class effect:
+
+```{r eval = FALSE}
+BF_1 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
+BF_2 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
+BF_3 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_3.rds')
+```
+
+Load and show:
+
+```{r eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+### LOO-CV
+
+LOO-CV objects:
+
+```{r eval = FALSE}
+both_interact_loo <- loo(both_interact_mdl, moment_match = TRUE)
+both_no_interact_loo <- loo(both_no_interact_mdl, moment_match = TRUE)
+both_no_word_class_loo <- loo(both_no_word_class_mdl, moment_match = TRUE)
+both_no_icon_loo <- loo(both_no_icon_mdl, moment_match = TRUE)
+
+# Save:
+
+saveRDS(both_interact_loo, '../models/loo_cv_objects/both_interact_loo.rds')
+saveRDS(both_no_interact_loo, '../models/loo_cv_objects/both_no_interact_loo.rds')
+saveRDS(both_no_word_class_loo, '../models/loo_cv_objects/both_no_word_class_loo.rds')
+saveRDS(both_no_icon_loo, '../models/loo_cv_objects/both_no_icon_loo.rds')
+```
+
+Read:
+
+```{r eval = TRUE}
+both_interact_loo <- readRDS('../models/loo_cv_objects/both_interact_loo.rds')
+both_no_interact_loo <- readRDS('../models/loo_cv_objects/both_no_interact_loo.rds')
+both_no_word_class_loo <- readRDS('../models/loo_cv_objects/both_no_word_class_loo.rds')
+both_no_icon_loo <- readRDS('../models/loo_cv_objects/both_no_icon_loo.rds')
+```
+
+LOO-CV compare:
+
+```{r}
+# Interaction versus no interaction:
+
+loo_compare(both_interact_loo, both_no_interact_loo)
+
+# No interaction versus iconicity:
+
+loo_compare(both_no_interact_loo, both_no_icon_loo)
+
+# No interaction versus word_class:
+
+loo_compare(both_no_interact_loo, both_no_word_class_loo)
+```
+
+## Data and model visualization
+
+Let's make a plot of the 100 items with their descriptive accuracy and 95% credible intervals.
+
+### Set up posterior draws
+
+For the item-level 95% CrI's, we'll use `both_mdl`, as this has the most power.
+
+Extract the posterior values of the word intercepts (random effects levels):
+
+```{r}
+word_posts <- coef(both_mdl)$word[, , 1]
+
+# Show:
+
+word_posts
+```
+
+Make this into a tibble and make the row names into a column that we can index:
+
+```{r}
+word_posts <- word_posts |>
+  as.data.frame() |> 
+  rownames_to_column('word')
+```
+
+Add the word class information back into there, as well as from the `items` tibble the iconicity quantile:
+
+```{r}
+word_posts <- word_posts |>
+  left_join(distinct(E1, word, word_class),
+            by = c('word' = 'word')) |> 
+  relocate(word_class, .after = word) |> 
+  left_join(distinct(items, romaji, quantile),
+            by = c('word' = 'romaji')) |> 
+  relocate(quantile, .after = word_class)
+```
+
+We'll also want to plot descriptive means to make sure the picture isn't tainted too much by shrinkage / so as to not to artificially deflate variation and suggest that results are more consistent as they are.
+
+```{r}
+word_posts <- left_join(word_posts, acc_item_avgs_both,
+                        by = c('word' = 'word'))
+```
+
+Sort the tibble by `Estimate` (posterior mean accuracy) and code the word factor with the levels in that order so that we don't have to use `reorder()` for the ggplot2 below:
+
+```{r}
+word_posts <- word_posts |> arrange(Estimate)
+
+# Factor code:
+
+word_posts <- word_posts |> 
+  mutate(word = factor(word, levels = word_posts$word))
+```
+
+It will be more intuitive for most audiences to plot this in probability space.
+
+```{r}
+word_posts <- word_posts |> 
+  mutate(estimate = plogis(Estimate),
+         lower_ci = plogis(Q2.5),
+         upper_ci = plogis(Q97.5))
+```
+
+### Plot sequence for Evolang presentation
+
+Make a plot of the posterior draws first:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  ggplot(aes(x = word, y = estimate)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors.pdf',
+       width = 12, height = 5)
+```
+
+Plot the same thing with added descriptive means on there:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  ggplot(aes(x = word, y = estimate)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5) +
+  geom_point(aes(y = acc_mean),
+             shape = 23, fill = 'goldenrod1',
+             size = 2.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_descriptive_means.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_descriptive_means.pdf',
+       width = 12, height = 5)
+```
+
+For Evolang presentation, we'll toggle through this and highlight the different word classes, as well as the highest iconicity quantile (quantile = 5).
+
+Quantile highlight:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  mutate(high_quantile = if_else(quantile == '5', 'high iconicity', 'other'),
+         high_quantile = factor(high_quantile, levels = c('other', 'high iconicity'))) |> 
+  ggplot(aes(x = word, y = estimate, col = high_quantile)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_color_manual(values = c('gray90', 'darkorchid3')) +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none')
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_quantile5.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_quantile5.pdf',
+       width = 12, height = 5)
+```
+
+Ideophone highlight:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  mutate(class_red = if_else(word_class == 'Mim', 'mimetic', 'other'),
+         class_red = factor(class_red, levels = c('other', 'mimetic'))) |> 
+  ggplot(aes(x = word, y = estimate, col = class_red)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_color_manual(values = c('gray90', 'darkorchid3')) +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none')
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_mimetics.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_mimetics.pdf',
+       width = 12, height = 5)
+```
+
+Verb highlight:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  mutate(class_red = if_else(word_class == 'Verb', 'verb', 'other'),
+         class_red = factor(class_red, levels = c('other', 'verb'))) |> 
+  ggplot(aes(x = word, y = estimate, col = class_red)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_color_manual(values = c('gray90', 'darkorchid3')) +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none')
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_verbs.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_verbs.pdf',
+       width = 12, height = 5)
+```
+
+Adjective highlight:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  mutate(class_red = if_else(word_class == 'Adj', 'adjective', 'other'),
+         class_red = factor(class_red, levels = c('other', 'adjective'))) |> 
+  ggplot(aes(x = word, y = estimate, col = class_red)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_color_manual(values = c('gray90', 'darkorchid3')) +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none')
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_adjectives.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_adjectives.pdf',
+       width = 12, height = 5)
+```
+
+Noun highlight:
+
+```{r fig.width = 14, fig.height = 6}
+# Plot core:
+
+word_p <- word_posts |> 
+  mutate(class_red = if_else(word_class == 'Noun', 'noun', 'other'),
+         class_red = factor(class_red, levels = c('other', 'noun'))) |> 
+  ggplot(aes(x = word, y = estimate, col = class_red)) +
+  geom_point() +
+  geom_segment(aes(y = lower_ci, yend = upper_ci)) +
+  geom_hline(linetype = 'dashed', yintercept = 0.5)
+
+# Axes and cosmetics:
+
+word_p <- word_p +
+  scale_color_manual(values = c('gray90', 'darkorchid3')) +
+  scale_x_discrete(expand = c(0.02, 0.02)) +
+  scale_y_continuous(limits = c(0, 1.0),
+                     breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0),
+                     labels = str_c(seq(0, 100, 20), '%')) +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.line.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none')
+
+# Show and save:
+
+word_p
+ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_nouns.png',
+       width = 12, height = 5)
+ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_nouns.pdf',
+       width = 12, height = 5)
+```
+
+This completes this analysis.
+
