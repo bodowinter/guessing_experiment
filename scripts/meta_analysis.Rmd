@@ -1,0 +1,1150 @@
+---
+title: "Meta-analysis of guessing accuracy studies"
+author: "Sidhu, Woodin, Perlman, Winter"
+date: "2025-09-26"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Intro
+
+In this script, we will perform a historical meta-analyses of the series of guessing accuracy studies that was performed under the banner of "phonetic symbolism" from the 1930's to the 1970's.
+
+Load libraries:
+
+```{r libraries, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(tidybayes)
+library(brms)
+```
+
+We'll use `darkorchid4` as the standard fill color:
+
+```{r}
+default_col <- 'darkorchid4'
+default_col2 <- 'lightsteelblue3'
+```
+
+Load data:
+
+```{r data_loading, message = FALSE, warning = FALSE}
+met <- read_csv('../data/phonetic_symbolism_meta_analysis.csv') |> 
+  select(reference, year, experiment, n_sub:accuracy) # re-order
+
+# Show random rows:
+
+sample_n(met, 10)
+```
+
+This data contains:
+
+- the `reference` of the initial publication
+- a numerical identifier for the `experiment` within each publication
+- the publication `year`
+- the number of subjects `n_sub`
+- the number of trials `n_trials`
+- whether the study only included `antonyms`
+- the modality with which stimuli were presented: `auditory_presentation` (0 = written, 1 = auditory)
+- the guessing `accuracy`, our main DV
+
+# Preprocessing
+
+The main DV, `accuracy`, is a percentage, which is a continuous variable that is bounded by [0%, 100%]. A sensible data-generating process for such data would be the beta distribution.
+
+For the Bayesian beta regression model below, we'll have to convert `accuracy` to be a [0, 1] bounded variable>
+
+```{r convert_to_01}
+met <- met |> 
+  mutate(acc_01 = accuracy / 100)
+
+# Check:
+
+met |> select(accuracy, acc_01)
+```
+
+# Overview
+
+This sections gives an overview of the dataset, answering such questions as:
+
+- How many publications, experiments, subjects, and trials do we have?
+- How many experiments do we have?
+- How many experiments included antonyms?
+- How many used auditory or written presentation?
+
+```{r n_pubs}
+met |> count(reference, sort = TRUE)
+```
+
+14 studies in total.
+
+What's the total number of experiments, and the average number of experiments?
+
+```{r n_experiments}
+met |> 
+  count(reference) |> 
+  summarize(total = sum(n),      # total number of experiments
+            average = mean(n))   # average number of experiments
+```
+
+We have a total of 57(!) experiments in this dataset. That's quite nice.
+
+On average, each study has about 4 experiments. The good old days!
+
+How many subjects do we have in total? And how many subjects does each study have on average?
+
+```{r n_sub}
+met |> 
+  summarize(n_total = sum(n_sub, na.rm = TRUE),
+            n_average = mean(n_sub, na.rm = TRUE),
+            min_sub = min(n_sub, na.rm = TRUE),
+            max_sub = max(n_sub, na.rm = TRUE))
+```
+
+A total of 3,366 participants across studies, on average ~60 per experiment. The smallest study has only 29 participants, the biggest one 294.
+
+This is an undercount because Allport (1935) does not report how many people participated in the experiment.
+
+Let's look at the number of trials:
+
+```{r n_trials}
+met |> 
+  summarize(n_total = sum(n_trials, na.rm = TRUE),
+            n_average = mean(n_trials, na.rm = TRUE))
+```
+
+A total of 1627 trials across experiments (on average 28.5 per experiment), which multiplied by the number of participants yields:
+
+```{r total_data_points}
+1627 * 3366
+```
+
+Our data is based on a whopping 5,476,482 (~5.5 million) data points. Again, this must be a slight undercount given that we don't have the participant figures for Allport (1935).
+
+How many experiments used antonyms?
+
+```{r antonym_count}
+met |> 
+  count(antonyms) |> 
+  mutate(p = n / sum(n),
+         perc = round(p, 3) * 100,
+         perc = str_c(perc, '%'))
+```
+
+More than two thirds of the studies (68.4%) tested antonyms. For 3 experiments (5.3% of the data), we do not know what kinds of stimuli were tested.
+
+How many experiments used auditory versus written presentations?
+
+```{r auditory_presentation_count}
+met |> 
+  count(auditory_presentation) |> 
+  mutate(p = n / sum(n),
+         perc = round(p, 3) * 100,
+         perc = str_c(perc, '%'))
+```
+
+A little more than half (54.4%) used written presentation, with slightly fewer using auditory presentation (43.9%).
+
+Let's look at whether there are more or less subjects over time, or more or less trials. We can color-code the data points for `antonyms` and map the `shape` of each point onto `auditory_presentation`.
+
+Since we don't have subject information for Allport (1935), we can set the x-axis from 1950 to 1980:
+
+```{r design_trends_n_sub, fig.width = 4.8, fig.height = 3.6, fig.align = 'center'}
+met |> 
+  filter(!is.na(antonyms),
+         !is.na(auditory_presentation)) |> 
+  ggplot(aes(x = year, y = n_sub)) +
+  geom_point(aes(color = factor(antonyms), shape = factor(auditory_presentation))) +
+  scale_x_continuous(limits = c(1950, 1975)) +
+  ylab('Number of subjects') +
+  theme_classic()
+```
+
+No real patterns here. Let's do the same for the number of trials:
+
+```{r design_trends_n_trials}
+met |> 
+  filter(!is.na(antonyms),
+         !is.na(auditory_presentation)) |> 
+  ggplot(aes(x = year, y = n_trials)) +
+  geom_point(aes(color = factor(antonyms), shape = factor(auditory_presentation))) +
+  scale_x_continuous(limits = c(1950, 1975)) +
+  ylab('Number of subjects') +
+  theme_classic()
+```
+
+Also no clear trend.
+
+# Descriptive statistics
+
+Let's compute the average accuracy across all studies (grand average):
+
+```{r grand_average}
+met |> summarize(M = mean(accuracy))
+```
+
+The average across all studies is 56.9%.
+
+Check descriptively whether `antonyms` makes a difference:
+
+```{r mean_antonyms}
+met |> 
+  filter(!is.na(antonyms)) |> 
+  group_by(antonyms) |> 
+  summarize(M = mean(accuracy))
+```
+
+Studies that test antonyms are 5.2% higher in average accuracy.
+
+Check descriptively whether `auditory_presentation` makes a difference:
+
+```{r mean_modality}
+met |> 
+  filter(!is.na(auditory_presentation)) |> 
+  group_by(auditory_presentation) |> 
+  summarize(M = mean(accuracy))
+```
+
+Exactly equal. Doesn't seem to make any difference.
+
+# Data visualization
+
+## Studies over time
+
+Make a plot of studies over time:
+
+```{r year_plot, fig.width = 8, fig.height = 4}
+# Plot core:
+
+year_p <- met |> 
+  count(year) |> 
+  ggplot(aes(x = year, y = n)) +
+  geom_col(fill = default_col2)
+
+# Axes, labels and cosmetics:
+
+year_p <- year_p +
+  xlab(NULL) +
+  ylab(NULL) +
+  scale_x_continuous(breaks = seq(1930, 1970, 10),
+                     limits = c(1930, 1975))+
+  scale_y_continuous(breaks = seq(0, 20, 5),
+                     limits = c(0, 20),
+                     expand = c(0, 0)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10))
+
+# Annotations:
+
+year_p <- year_p +
+  # Allport 1935
+
+  annotate('text', x = 1941.5, y = 3,
+           label = 'Allport (1935)',
+           hjust = 0.5, size = 4) +
+  annotate('curve', x = 1938.2, y = 2.9,
+           xend = 1935.5, yend = 1.2,
+           curvature = +0.2,
+           arrow = arrow(length = unit(5, 'pt')),
+           linewidth = 0.5) +
+
+  # Brown, Black & Horowitz (1955)
+
+  annotate('text', x = 1950, y = 8 - 1,
+           xend = 1954.5, yend = 3.5,
+           label = 'Brown, Black & Horowitz (1955)',
+           hjust = 0.5, size = 4) +
+  annotate('curve', x = 1950, y = 7.5 -1,
+           xend = 1954.3, yend = 2.7,
+           curvature = +0.2,
+           arrow = arrow(length = unit(5, 'pt')),
+           linewidth = 0.5) +
+
+  # Baindurashvili (1967) & Siegel, Silverman, & Markel (1967)
+
+  annotate('text', x = 1966.4, y = 14.5,
+           label = 'Baindurashvili (1967)\nSiegel, Silverman, & Markel (1967)',
+           hjust = 1, size = 4)
+
+# Show and save:
+
+year_p
+ggsave(plot = year_p,
+       filename = '../figures/png/meta_studies_over_time.png',
+       width = 8, height = 4)
+```
+
+
+## Average accuracy
+
+Peaking ahead
+
+**Note:** Change order later.
+
+```{r}
+x <- seq(35, 80, length.out = 1000)
+
+prior_df <- tibble(accuracy = x,
+                   density = dt((qlogis(x / 100) - 0) / 0.1724, df = 3) / 0.1724 * (1 / ((x / 100) * (1 - x / 100))) / 100) |> 
+  mutate(density = density * 2) # scale for plot
+```
+
+
+Let's make a density plot of the distribution of accuracy values across studies:
+
+```{r density_plot, fig.width = 4.8, fig.height = 3.1, fig.align = 'center'}
+# Plot core:
+
+dens_p <- met |> 
+  ggplot(aes(x = accuracy)) +
+  geom_density(fill = default_col2, alpha = 0.8) +
+  geom_vline(xintercept = 50, linetype = 'dashed') +
+  geom_rug(alpha = 0.6, length = unit(0.027, 'npc'))
+
+# Scales, axes, and annotations:
+
+dens_p <- dens_p +
+  scale_x_continuous(limits = c(40, 80),
+                     breaks = seq(40, 80, 5),
+                     labels = str_c(seq(40, 80, 5), '%')) +
+  # scale_y_continuous(expand = c(0, 0), limits = c(0, 0.10),
+  #                    breaks = seq(0, 0.10, 0.02)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.25), # for later transition
+                     breaks = seq(0, 0.25, 0.05)) +
+  xlab('Accuracy (study average)') +
+  # ylab('Probability density') +
+  ylab(NULL) +
+  NULL
+  # annotate('text', x = 49.6, y = 0.09,
+  #          label = '50% chance\nbaseline',
+  #          hjust = 1,
+  #          size = 3)
+
+# Visualize intercept prior on this:
+
+dens_p <- dens_p +
+  geom_line(data = prior_df,
+            mapping = aes(x = accuracy, y = density),
+            linewidth = 1, col = 'chartreuse4')
+
+# Plot cosmetics:
+
+dens_p <- dens_p +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = 'bold', margin = margin(t = 6))) +
+  # theme(axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank()) +
+  coord_cartesian(clip = 'off')
+
+# Show and save:
+
+dens_p
+ggsave('../figures/pdf/meta_analysis_density_plot.pdf',
+       width = 6, height = 2.8)
+ggsave('../figures/png/meta_analysis_density_plot.png',
+       width = 6, height = 2.8)
+```
+
+# Modeling
+
+## Grand average, no fixed effects, unweighted
+
+Our first beta regression model will be an intercept-only model. This is because we have one `NA` for the `antonyms` variable, and we want to know what the grand average is irrespective of any of the fixed effects.
+
+The model will contain a `(1|reference)` random intercept, i.e., it is a random effects meta-analysis allowing for some studies to have on average higher or lower accuracies. The random effect variation is likely going to be inflated in this model because `(1|reference)` masks the contribution of the `antonyms` and `auditory_presentation` variables, e.g., some references include only antonyms (e.g., Baindurashvili 1967), and others only test non-antonyms (e.g., Brackbill and Little 1957).
+
+In this first analysis, we'll now weight by `n_sub`, i.e., each study will be treated equally. Later we'll look at how things appear when we allow bigger studies to contribute more towards the mean using a weighted beta regression.
+
+### Prior specification
+
+`brms` would set a `student_t(3, 0, 2.5)` prior on the intercept by default. Let's visualize this prior:
+
+```{r prior_viz, fig.width = 4.8, fig.height = 3.1, fig.align = 'center'}
+# Plot core:
+
+ggplot(data = tibble(x = c(-15, 15)),
+       mapping = aes(x)) +
+  stat_function(fun = function(x) dt((x - 0) / 2.5, df = 3) / 2.5,
+                color = "lightsteelblue4",
+                linewidth = 1) +
+  
+# Axes and labels:
+  
+  labs(title = "Prior for Intercept",
+       y = "Density",
+       x = "Intercept") +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 0.2)) +
+  
+# Cosmetics:
+  
+  theme_minimal() +
+  theme(axis.line.x = element_line())
+```
+
+This is on the logit scale, since beta regression uses a `mu = logit` link. The graph suggests that this prior would seem to be very agnostic. Even very high and low logit values, e.g., -8/+8, have quite high probability mass, which would correspond to accuracies of:
+
+```{r check_prior_assumptions}
+# Check logit values -8, +8
+
+plogis(-8)
+plogis(+8)
+
+# Check logit values -5, +5
+
+plogis(-5)
+plogis(+5)
+```
+
+Yeah, this prior definitely puts too much probability mass on extreme values.
+
+This judgment is based on multiple factors:
+
+- lived experience tells us that when we listen to foreign languages we don't know, we cannot really understand anything unless the languages are closely related
+- Dingemanse et al. (2016), a study that tested guessing accuracy of ideophones - largely independent of this research on phonetic symbolism - achieved ~55% accuracy in a binary forced choice task, and that's for words that very iconic to native speakers, which are pretty much our "best bet" for being guessable at all
+- linguistic theory tells us that form-meaning mappings are largely conventional (e.g., Saussure), and even if we assume that all words ultimately may have iconic origins, de-iconization is likely going to have eroded much of that to levels that are not accessible to foreigners
+
+All of this warrants a tighter intercept. I'd say that as a good first bet, putting the 95% probability mass onto the range [40%, 60%] seems sensible. This basically says: all else being equal, we expect 50% chance performance in a binary forced choice task, and 60% would be surprisingly good performance for conventional words.
+
+With a little help from our friend ChatGPT, and keeping degrees of freedom = 3 for reasonably heavy tails, we need to find the right sigma.
+
+```{r find_sigma}
+# Find sigma that is 95% at 60%:
+
+sigma <- qlogis(0.6) / qt(0.975, df = 3)
+
+# Check if it maps to [0.4, 0.6]:
+
+
+plogis( qt(c(.025, .975), df = 3) * sigma )
+```
+
+Yup, it does. Nice. Let's visualize this prior now.
+
+```{r updated_prior_viz, fig.width = 4.8, fig.height = 3.1, fig.align = 'center'}
+# Plot core:
+
+ggplot(data = tibble(x = c(-15, 15)),
+       mapping = aes(x)) +
+  stat_function(fun = function(x) dt((x - 0) / sigma, df = 3) / sigma, # new value
+                color = "lightsteelblue4",
+                linewidth = 1) +
+  
+# Axes and labels:
+  
+  labs(title = "Prior for Intercept",
+       y = "Density",
+       x = "Intercept") +
+  scale_x_continuous(limits = c(-2, +2),
+                     breaks = seq(-2, 2, 0.5)) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 3.5)) +
+  
+# Cosmetics:
+  
+  theme_minimal() +
+  theme(axis.line.x = element_line())
+```
+
+Next, let's think about the random intercept prior. As a hunch, I'd be very surprised if one study had, say, +20% more accuracy than another. But because different studies use very different sets of words, different languages (sometimes not related at all, sometimes from a different genus of the Indo-European family), and use different tasks (e.g., antonyms, which are probably easier), the accuracy variation is probably bigger.
+
+For our intercept, sigma is at:
+
+```{r show_sigma}
+sigma
+```
+
+I'd say that a sigma double than that is probably a good first bet.
+
+```{r check_sigma}
+plogis(qt(c(.025, .975), df = 3) * (sigma * 2))
+```
+
+So, let's set the priors. For the phi parameter we will use the very agnostic `brms` default `gamma(0.01, 0.01)`:
+
+```{r set_priors}
+met_priors <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                prior(student_t(3, 0, 0.2548134), class = 'sd'),
+                prior(gamma(0.01, 0.01), class = 'phi'))
+```
+
+### Fit intercept-only model
+
+Now run the model. We set `eval = FALSE` in the code chunk options because models will be pre-compiled before knitting to save time.
+
+Important side note: to facilitate later comparison with the weighted model, I am fitting this model without the single Allenport (1935) data point for which we are missing `n_sub`. I've checked, and it makes pretty much no difference (only a couple decimals), so our conclusions don't change much, but otherwise we can't compare the models because they'd be fitted to different datasets.
+
+```{r fit_meta_mdl, eval = FALSE}
+meta_mdl <- brm(acc_01 ~ 1 + (1|reference),
+                data = filter(met, !is.na(n_sub)),
+                family = Beta(),
+                prior = met_priors,
+                
+                # MCMC settings:
+                
+                save_pars = save_pars(all = TRUE),
+                cores = 4, chains = 4,
+                iter = 12000, warmup = 4000, thin = 1,
+                seed = 42)
+
+# Save:
+
+saveRDS(meta_mdl, file = '../models/meta_analysis_intercept_only_unweighted.rds')
+```
+
+Load this now with `eval = TRUE` so that it is available for knitting:
+
+```{r load_meta_mdl}
+meta_mdl <- readRDS('../models/meta_analysis_intercept_only_unweighted.rds')
+```
+
+Double-check that priors have been correctly applied:
+
+```{r prior_summary_meta_mdl}
+prior_summary(meta_mdl)
+```
+
+Check MCMC plots to visually assess whether chains are mixing well, as well as first plot of posterior distribution:
+
+```{r plot_mcmc_chains}
+plot(meta_mdl)
+```
+
+Looks good.
+
+Check posterior predictive simulations:
+
+```{r pp_check_meta_mdl}
+pp_check(meta_mdl, ndraws = 100)
+```
+
+Decent.
+
+Show the model:
+
+```{r summarize_meta_mdl} 
+meta_mdl
+```
+
+What does our model predict on the proportion scale in terms of the posterior mean and 95% credible interval?
+
+We want the marginal posterior mean and 95% interval, integrated over the random effects distribution, not conditioning on any specific group:
+
+```{r compute_marginal_mean_unweighted}
+# Setup new data:
+
+new_data <- tibble(group = 'NEW')
+
+# Draws from expected value of the posterior distribution:
+
+ep <- posterior_epred(meta_mdl,
+                      newdata = new_data,
+                      allow_new_levels = TRUE,
+                      sample_new_levels = 'gaussian')
+
+# Summaries:
+
+mean(ep)              # posterior mean
+quantile(ep, 0.025)   # 95% credible interval, lower bound
+quantile(ep, 0.975)   # 95% credible interval, upper bound
+```
+
+The posterior mean accuracy (marginal over the random effects distribituion) is 56.7%, and we can be 95% certain that the mean lies between 45.9% and 66.5%.
+
+What is the probability that the intercept, in its logit value, is above 50%? We'll do a simple test of same sign here - it's not clear what a sensible ROPE would be.
+
+```{r hypothesis_meta_mdl}
+hypothesis(meta_mdl, 'Intercept > 0')
+```
+
+Given this model, priors and data, we can be 100% certain that the average is above 50%, that is, 100% of all posterior samples are above that threshold.
+
+## Weighted regression
+
+Now we want to apply regression weights that penalize small-sample studies relative to large-sample studies, which should count more towards the mean.
+
+```{r fit_weighted_mdl, eval = FALSE}
+weighted_mdl <- brm(acc_01 | weights(n_sub) ~ 1 + (1|reference),
+                    data = filter(met, !is.na(n_sub)),
+                    family = Beta(),
+                    prior = met_priors,
+                
+                    # MCMC settings:
+                    
+                    save_pars = save_pars(all = TRUE),
+                    cores = 4, chains = 4,
+                    iter = 12000, warmup = 4000, thin = 1,
+                    seed = 42)
+
+# Save:
+
+saveRDS(weighted_mdl, file = '../models/meta_analysis_intercept_only_weighted.rds')
+```
+
+Load this now with `eval = TRUE` so that it is available for knitting:
+
+```{r load_weighted_mdl}
+weighted_mdl <- readRDS('../models/meta_analysis_intercept_only_weighted.rds')
+```
+
+Double-check that priors have been correctly applied:
+
+```{r prior_summary_weighted_mdl}
+prior_summary(weighted_mdl)
+```
+
+Check MCMC plots to visually assess whether chains are mixing well, as well as first plot of posterior distribution:
+
+```{r plot_mcmc_chains_weighted}
+plot(weighted_mdl)
+```
+
+Looks good again. The scale of the phi parameter has changed massively, but that's just because we didn't mean-center the weights and since we're not interested in phi, that's OK here.
+
+Check posterior predictive simulations:
+
+```{r pp_check_weighted_mdl}
+pp_check(weighted_mdl, ndraws = 100)
+```
+
+Decent again.
+
+Show the model:
+
+```{r summarize_weighted_mdl} 
+weighted_mdl
+```
+
+Same as above, marginal posterior mean and 95% interval, not conditioning on any specific group:
+
+```{r compute_marginal_mean_weighted}
+# Draws from expected value of the posterior distribution:
+
+ep <- posterior_epred(weighted_mdl,
+                      newdata = new_data,
+                      allow_new_levels = TRUE,
+                      sample_new_levels = 'gaussian')
+
+# Summaries:
+
+mean(ep)              # posterior mean
+quantile(ep, 0.025)   # 95% credible interval, lower bound
+quantile(ep, 0.975)   # 95% credible interval, upper bound
+```
+
+What is the probability that the intercept, in its logit value, is above 50%? We'll do a simple test of same sign here - it's not clear what a sensible ROPE would be.
+
+```{r hypothesis_weighted_mdl}
+hypothesis(weighted_mdl, 'Intercept > 0')
+```
+
+Again, super certain it's above 50%.
+
+### Model comparison
+
+Let's compare the weighted and unweighted models in terms of their predictive power, using LOO-CV:
+
+```{r eval = FALSE}
+# loo_unweighted <- loo(meta_mdl, reloo = TRUE)
+# loo_weighted <- loo(weighted_mdl, reloo = TRUE)
+# 
+# saveRDS(loo_unweighted, '../models/loo_cv_objects/meta_loo_unweighted.rds')
+# saveRDS(loo_weighted, '../models/loo_cv_objects/meta_loo_unweighted.rds')
+```
+
+**Note**: For `weighted_mdl`: `7 problematic observation(s) found. The model will be refit 7 times.`
+**Note 2**: I *still* get this warning: `Warning messages: 1: Ignoring relative efficiencies as some were NA. See argument 'r_eff' in ?loo::loo for more details.  2: Some Pareto k diagnostic values are too high. See help('pareto-k-diagnostic') for details.`
+
+Load and compare:
+
+```{r eval = TRUE}
+# loo_unweighted <- readRDS('../models/loo_cv_objects/meta_loo_unweighted.rds')
+# loo_weighted <- readRDS('../models/loo_cv_objects/meta_loo_unweighted.rds')
+# 
+# loo_compare(loo_unweighted, loo_weighted)
+```
+
+**Note**: Be careful though given the warning messages above.
+**Note**: With the higher post-warmup iterations it doesn't run anymore due to 500 Mb constraint. So, lots of issues with this -> we'll work with the k-fold cross-validation.
+
+K-fold cross-validation as loo compare seems to have issues:
+
+```{r eval = FALSE}
+k10_weighted <- kfold(weighted_mdl, K = 10, save_fits = TRUE)
+k10_unweighted <- kfold(meta_mdl, K = 10, save_fits = TRUE)
+
+saveRDS(k10_weighted, '../models/loo_cv_objects/meta_k10_weighted.rds')
+saveRDS(k10_unweighted, '../models/loo_cv_objects/meta_k10_unweighted.rds')
+```
+
+Load and compare:
+
+```{r eval = TRUE}
+k10_weighted <- readRDS('../models/loo_cv_objects/meta_k10_weighted.rds')
+k10_unweighted <- readRDS('../models/loo_cv_objects/meta_k10_unweighted.rds')
+
+loo_compare(k10_weighted, k10_unweighted)
+```
+
+## Model with fixed effects
+
+### Prior specification
+
+Let's add the antonym and auditory presentation fixed effects. This means that we now need to also specify priors for the coefficient slopes.
+
+Here, I'm going to use the same reasonign that is explicated in `experiment_analysis` for the size of the SD of the student-t distributed prior for the slope (I did that analysis before this one). This works because we're also working with the assumption that things are around 50% and that a 10% change is a big change and should be at the fringe of our expectations (we're finding the logit value that is 40%/60%).
+
+```{r}
+met_priors_b <- c(prior(student_t(3, 0, 0.1274067), class = 'Intercept'),
+                  prior(student_t(3, 0, 0.1274067), class = 'b'),
+                  prior(student_t(3, 0, 0.2548134), class = 'sd'),
+                  prior(gamma(0.01, 0.01), class = 'phi'))
+```
+
+### Fit fixed-effects model
+
+As the intercept-only model has shown that the weighted model is massively preferred as per LOO-CV, we'll go ahead with that and don't consider the unweighted model anymore. From now on, all models will include regression weights for the number of subjects.
+
+We'll want to compare the different models (with or without `antonyms` and/or `auditory_presentation`) with each other, so we need to make sure that they're fitted to the same data.
+
+Since some tags are `NA` for either `antonyms` or `auditory_presentation`, we need to get the subset that has no `NA` for any of these:
+
+```{r}
+met_red <- met |> 
+  filter(!is.na(antonyms),
+         !is.na(auditory_presentation),
+         !is.na(n_sub))
+```
+
+It would be nice to test the intercept (average guessing accuracy) in a model that controls for antonyms and auditory presentation. For this we want to create sum-codes that are fractional / weighted by how many cases there are, given that we have an unequal number of studies with/without antonyms or auditory presentation.
+
+Check the percentages again in the new no-`NA` tibble:
+
+```{r}
+# Antonyms:
+
+met_red |> 
+  count(antonyms) |> 
+  mutate(p = n / sum(n))
+
+# Auditory presentation:
+
+met_red |> 
+  count(auditory_presentation) |> 
+  mutate(p = n / sum(n))
+```
+
+Now assign the weighted effect coding:
+
+```{r}
+met_red <- met_red |> 
+  mutate(antonyms_weighted = if_else(antonyms == 0, -0.722, +0.278),
+         auditory_weighted = if_else(auditory_presentation == 0, -0.426, +0.574))
+
+# Sanity checks:
+
+0.278 * (-0.722) + 0.722 * (+0.278)
+0.574 * (-0.426) + 0.426 * (+0.574)
+
+with(met_red, weighted.mean(antonyms_weighted, w = rep(1, nrow(met_red))))
+with(met_red, weighted.mean(auditory_weighted, w = rep(1, nrow(met_red))))
+```
+
+Looks good.
+
+Fit the model:
+
+```{r fit_weighted_full_mdl, eval = FALSE}
+full_mdl <- brm(acc_01 | weights(n_sub) ~ 1 +
+                  antonyms_weighted + auditory_weighted +
+                  (1|reference),
+                data = met_red,
+                family = Beta(),
+                prior = met_priors_b,
+                
+                # MCMC settings:
+                    
+                save_pars = save_pars(all = TRUE),
+                cores = 4, chains = 4,
+                iter = 12000, warmup = 4000, thin = 1,
+                seed = 42)
+
+# Save:
+
+saveRDS(full_mdl, file = '../models/meta_full_mdl.rds')
+```
+
+Load:
+
+```{r load_full_mdl, eval = TRUE}
+full_mdl <- readRDS('../models/meta_full_mdl.rds')
+```
+
+Build the nested model without `antonyms` and without `auditory_presentation`:
+
+```{r fit_weighted_nested_mdl, eval = FALSE}
+full_no_antonym_mdl <- brm(acc_01 | weights(n_sub) ~ 1 +
+                             auditory_presentation +
+                             (1|reference),
+                           data = met_red,
+                           family = Beta(),
+                           prior = met_priors_b,
+                
+                           # MCMC settings:
+                    
+                           save_pars = save_pars(all = TRUE),
+                           cores = 4, chains = 4,
+                           iter = 12000, warmup = 4000, thin = 1,
+                           seed = 42)
+
+full_no_auditory_mdl <- brm(acc_01 | weights(n_sub) ~ 1 +
+                              antonyms +
+                              (1|reference),
+                            data = met_red,
+                            family = Beta(),
+                            prior = met_priors_b,
+                
+                            # MCMC settings:
+                    
+                            save_pars = save_pars(all = TRUE),
+                            cores = 4, chains = 4,
+                            iter = 4000, warmup = 2000, thin = 1,
+                            seed = 42)
+
+# Save:
+
+saveRDS(full_no_antonym_mdl, file = '../models/full_no_antonym_mdl.rds')
+saveRDS(full_no_auditory_mdl, file = '../models/full_no_auditory_mdl.rds')
+```
+
+Load:
+
+```{r load_weighted_nested_mdl}
+full_no_antonym_mdl <- readRDS(file = '../models/full_no_antonym_mdl.rds')
+full_no_auditory_mdl <- readRDS(file = '../models/full_no_auditory_mdl.rds')
+```
+
+### k10 compare
+
+Since LOO-CV turned out to be problematic for the weighted model above, we'll just do ten-fold cross-validation right away.
+
+```{r k10_full_mdl, eval = FALSE}
+k10_full <- kfold(full_mdl, K = 10, save_fits = TRUE)
+k10_no_antonym <- kfold(full_no_antonym_mdl, K = 10, save_fits = TRUE)
+k10_no_auditory <- kfold(full_no_auditory_mdl, K = 10, save_fits = TRUE)
+
+saveRDS(k10_full, '../models/loo_cv_objects/meta_k10_full.rds')
+saveRDS(k10_no_antonym, '../models/loo_cv_objects/meta_k10_no_antonym.rds')
+saveRDS(k10_no_auditory, '../models/loo_cv_objects/meta_k10_no_auditory.rds')
+```
+
+Load k10 cross-validations:
+
+```{r eval = TRUE}
+k10_full <- readRDS('../models/loo_cv_objects/meta_k10_full.rds')
+k10_no_antonym <- readRDS('../models/loo_cv_objects/meta_k10_no_antonym.rds')
+k10_no_auditory <- readRDS('../models/loo_cv_objects/meta_k10_no_auditory.rds')
+```
+
+Check antonym effect:
+
+```{r k10_antonym}
+loo_compare(k10_full, k10_no_antonym)
+```
+
+Auditory presentation effect:
+
+```{r k10_auditory}
+loo_compare(k10_full, k10_no_auditory)
+```
+
+## Bayes factors
+
+Assess Bayes factors for antonym versus full:
+
+```{r full_v_antonym_BF, eval = FALSE}
+BF_1 <- bayes_factor(full_mdl, full_no_antonym_mdl)
+BF_2 <- bayes_factor(full_mdl, full_no_antonym_mdl)
+BF_3 <- bayes_factor(full_mdl, full_no_antonym_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/meta_full_v_no_antonym_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/meta_full_v_no_antonym_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/meta_full_v_no_antonym_BF_3.rds')
+```
+
+Load and show:
+
+```{r full_v_antonym_BF_load, eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/meta_full_v_no_antonym_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/meta_full_v_no_antonym_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/meta_full_v_no_antonym_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+MASSIVE - but also varying on orders of magnitude. Highly volatile and can't be trusted. Need to see if upping post-warmup samples helps, but I suspect Bayes Factors will be tricky for this data.
+
+```{r auditory_v_full_BF, eval = FALSE}
+BF_1 <- bayes_factor(full_no_auditory_mdl, full_mdl)
+BF_2 <- bayes_factor(full_no_auditory_mdl, full_mdl)
+BF_3 <- bayes_factor(full_no_auditory_mdl, full_mdl)
+
+# Save:
+
+saveRDS(BF_1, '../models/bayes_factors/meta_no_auditory_v_full_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/meta_no_auditory_v_full_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/meta_no_auditory_v_full_BF_3.rds')
+```
+
+Load and show:
+
+```{r auditory_v_full_BF_load, eval = TRUE}
+BF_1 <- readRDS('../models/bayes_factors/meta_no_auditory_v_full_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/meta_no_auditory_v_full_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/meta_no_auditory_v_full_BF_3.rds')
+
+# Show:
+
+BF_1
+BF_2
+BF_3
+```
+
+These ones don't vary that much, but still a little volatile - to be interpreted for now as they all point in a similar direction, but **Note**: up post-warmup iterations to see whether this makes things more stable. Suggest mostly "meh" preference for the no auditory model.
+
+## Interpret model
+
+Show the full model:
+
+```{r interpret_full_mdl}
+full_mdl
+```
+
+Get the corresponding 95% interval of the interceptL
+
+```{r}
+fixef(full_mdl) |> 
+  as.data.frame() |> 
+  slice_head(n = 1) |> 
+  mutate(estimate_p = plogis(Estimate),
+         lower_ci = plogis(Q2.5),
+         upper_ci = plogis(Q97.5))
+```
+
+
+## Posterior probabilities
+
+Compute posterior probabilities of direction:
+
+```{r full_mdl_post_probs}
+hypothesis(full_mdl, 'Intercept > 0')
+hypothesis(full_mdl, 'antonyms_weighted > 0')
+hypothesis(full_mdl, 'auditory_weighted < 0')
+```
+
+# Data visualization
+
+## Accuracy with model
+
+Extract posterior to superimpose on the plot.
+
+```{r}
+posts_int <- as_draws_df(full_mdl) |>
+  select(b_Intercept) |> 
+  mutate(int = plogis(b_Intercept),
+         int = int * 100)
+
+# Show:
+
+posts_int
+```
+
+Distribution of accuracy values with superimposed posterior for the mean accuracy:
+
+```{r density_plot_with_post, fig.width = 4.8, fig.height = 3.1, fig.align = 'center'}
+# Plot core:
+
+dens_p <- met |> 
+  ggplot(aes(x = accuracy)) +
+  geom_density(fill = default_col2, alpha = 0.8) +
+  # geom_line(data = prior_df,
+  #           mapping = aes(x = accuracy, y = density),
+  #           linewidth = 1, col = 'chartreuse4') +
+  geom_density(data = posts_int,
+               mapping = aes(x = int),
+               fill = default_col, alpha = 0.5) +
+  geom_vline(xintercept = 50, linetype = 'dashed') +
+  geom_rug(alpha = 0.6, length = unit(0.024, 'npc'))
+
+# Scales, axes, and annotations:
+
+dens_p <- dens_p +
+  scale_x_continuous(limits = c(40, 80),
+                     breaks = seq(40, 80, 5),
+                     labels = str_c(seq(40, 80, 5), '%')) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.25),
+                     breaks = seq(0, 0.25, 0.05)) +
+  xlab('Accuracy (study average)') +
+  # ylab('Probability density') +
+  ylab(NULL) +
+  NULL
+  # annotate('text', x = 49.6, y = 0.09,
+  #          label = '50% chance\nbaseline',
+  #          hjust = 1,
+  #          size = 3)
+
+# With 95% credible interval of the mean:
+
+# dens_p <- dens_p +
+#   geom_errorbarh(aes(xmin = 0.5223956 * 100,
+#            xmax = 0.6043825 * 100,
+#            y = 0.2),
+#            height = 0.01)
+
+# Plot cosmetics:
+
+dens_p <- dens_p +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = 'bold', margin = margin(t = 6))) +
+  # theme(axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+# Show and save:
+
+dens_p
+ggsave('../figures/pdf/meta_analysis_density_plot_with_posts.pdf',
+       width = 6, height = 2.8)
+ggsave('../figures/png/meta_analysis_density_plot_with_posts.png',
+       width = 6, height = 2.8)
+```
+
+## Accuracy with antonyms
+
+Extract the posterior for intercept and antonyms and derive the predictions for the different antonym conditions from that. Do the same for auditory:
+
+```{r antonym_posts}
+# For reference:
+
+# mutate(antonyms_weighted = if_else(antonyms == 0, -0.722, +0.278),
+#          auditory_weighted = if_else(auditory_presentation == 0, -0.426, +0.574))
+
+# Extract posteriors and calculate conditions:
+
+posts_int <- as_draws_df(full_mdl) |>
+  select(b_Intercept, b_antonyms_weighted, b_auditory_weighted) |> 
+  mutate(int = plogis(b_Intercept) * 100,
+         antonyms = b_Intercept + (b_antonyms_weighted * 0.278),
+         no_antonyms = b_Intercept + (b_antonyms_weighted * (-0.722)),
+         antonyms = plogis(antonyms) * 100,
+         no_antonyms = plogis(no_antonyms) * 100)
+
+# Show:
+
+posts_int
+```
+
+Accuracy means with superimposed posterior for antonym and no-antonym studies.
+
+```{r density_plot_with_antonym_posts, fig.width = 4.8, fig.height = 3.1, fig.align = 'center'}
+# Plot core:
+
+dens_p <- met |> 
+  ggplot(aes(x = accuracy)) +
+  # geom_density(fill = default_col2, alpha = 0.8) +
+  geom_density(data = posts_int,
+               mapping = aes(x = no_antonyms),
+               fill = 'burlywood3', alpha = 0.5) +
+  geom_density(data = posts_int,
+               mapping = aes(x = antonyms),
+               fill = default_col, alpha = 0.5) +
+  geom_vline(xintercept = 50, linetype = 'dashed') +
+  geom_rug(alpha = 0.6, length = unit(0.024, 'npc'))
+
+# Scales, axes, and annotations:
+
+dens_p <- dens_p +
+  scale_x_continuous(limits = c(40, 80),
+                     breaks = seq(40, 80, 5),
+                     labels = str_c(seq(40, 80, 5), '%')) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.25),
+                     breaks = seq(0, 0.25, 0.05)) +
+  xlab('Accuracy (study average)') +
+  ylab('Probability density') +
+  ylab(NULL) +
+  NULL
+  # annotate('text', x = 49.6, y = 0.09,
+  #          label = '50% chance\nbaseline',
+  #          hjust = 1,
+  #          size = 3)
+
+# Plot cosmetics:
+
+dens_p <- dens_p +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = 'bold', margin = margin(t = 6))) +
+  # theme(axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+# Show and save:
+
+dens_p
+ggsave('../figures/pdf/meta_analysis_density_plot_with_antonym_posts.pdf',
+       width = 6, height = 2.8)
+ggsave('../figures/png/meta_analysis_density_plot_with_antonym_posts.png',
+       width = 6, height = 2.8)
+```
+
+## Conditional effects
+
+Extract conditional effects for antonyms - these will appear like a continuous regression line because we just supplied numerical values.
+
+```{r}
+antonyms_cond <- conditional_effects(full_mdl, effects = 'antonyms_weighted')[[1]]
+
+auditory_cond <- conditional_effects(full_mdl, effects = 'auditory_weighted')[[1]]
+```
+
+Get the first and last column:
+
+```{r}
+antonyms_cond[1, ]$estimate__
+antonyms_cond[nrow(antonyms_cond), ]$estimate__
+
+# Difference in posterior means (%):
+
+(antonyms_cond[nrow(antonyms_cond), ]$estimate__ - antonyms_cond[1, ]$estimate__) * 100
+```
+
+## Items iconicity rating by word class
+
+Iconicity ratings:
+
+```{r}
+items |> 
+  ggplot(aes(x = pos, y = rating)) +
+  geom_boxplot() +
+  theme_classic()
+ggsave('../figures/png/boxplot.png', width = 3.5, height = 4)
+```
+
+
+This completes this analysis.
