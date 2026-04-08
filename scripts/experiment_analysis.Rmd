@@ -1005,6 +1005,17 @@ contrasts(both$word_class_sum)
 
 The above-specified prior will be a bit more diffuse for this sum-coded predictor relative to the previously treatment-coded predictor, but that's ok- no need to really change this.
 
+Let's also sum-code the experiment predictor. Here things are balanced, so we can use standard contrasts:
+
+```{r}
+both <- both |> 
+  mutate(experiment = factor(experiment,
+                             levels = c('form-to-meaning (E1)',
+                                        'meaning-to-form (E2)')))
+
+contrasts(both$experiment) <- contr.sum(2)
+```
+
 We've rename the `participant` variable to `unique_id` though, so our prior object needs to reflect this as well:
 
 ```{r}
@@ -1141,23 +1152,23 @@ BF_3
 Second, the iconicity effect:
 
 ```{r eval = FALSE}
-BF_1 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
-BF_2 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
-BF_3 <- bayes_factor(both_no_interact_mdl, both_no_icon_mdl)
+BF_1 <- bayes_factor(both_no_icon_mdl, both_no_interact_mdl)
+BF_2 <- bayes_factor(both_no_icon_mdl, both_no_interact_mdl)
+BF_3 <- bayes_factor(both_no_icon_mdl, both_no_interact_mdl)
 
 # Save:
 
-saveRDS(BF_1, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_1.rds')
-saveRDS(BF_2, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_2.rds')
-saveRDS(BF_3, '../models/bayes_factors/both_no_interact_v_no_iconicity_BF_3.rds')
+saveRDS(BF_1, '../models/bayes_factors/both_no_icon_v_no_interact_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_no_icon_v_no_interact_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_no_icon_v_no_interact_BF_3.rds')
 ```
 
 Load and show:
 
 ```{r eval = TRUE}
-BF_1 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_1.rds')
-BF_2 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_2.rds')
-BF_3 <- readRDS('../models/bayes_factors/both_no_interact_v_no_iconicity_BF_3.rds')
+BF_1 <- readRDS('../models/bayes_factors/both_no_icon_v_no_interact_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_no_icon_v_no_interact_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_no_icon_v_no_interact_BF_3.rds')
 
 # Show:
 
@@ -1169,23 +1180,23 @@ BF_3
 Third, the word class effect:
 
 ```{r eval = FALSE}
-BF_1 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
-BF_2 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
-BF_3 <- bayes_factor(both_no_interact_mdl, both_no_word_class_mdl)
+BF_1 <- bayes_factor(both_no_word_class_mdl, both_no_interact_mdl)
+BF_2 <- bayes_factor(both_no_word_class_mdl, both_no_interact_mdl)
+BF_3 <- bayes_factor(both_no_word_class_mdl, both_no_interact_mdl)
 
 # Save:
 
-saveRDS(BF_1, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_1.rds')
-saveRDS(BF_2, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_2.rds')
-saveRDS(BF_3, '../models/bayes_factors/both_no_interact_v_no_word_class_BF_3.rds')
+saveRDS(BF_1, '../models/bayes_factors/both_no_word_class_v_no_interact_BF_1.rds')
+saveRDS(BF_2, '../models/bayes_factors/both_no_word_class_v_no_interact_BF_2.rds')
+saveRDS(BF_3, '../models/bayes_factors/both_no_word_class_v_no_interact_BF_3.rds')
 ```
 
 Load and show:
 
 ```{r eval = TRUE}
-BF_1 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_1.rds')
-BF_2 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_2.rds')
-BF_3 <- readRDS('../models/bayes_factors/both_no_interact_v_no_word_class_BF_3.rds')
+BF_1 <- readRDS('../models/bayes_factors/both_no_word_class_v_no_interact_BF_1.rds')
+BF_2 <- readRDS('../models/bayes_factors/both_no_word_class_v_no_interact_BF_2.rds')
+BF_3 <- readRDS('../models/bayes_factors/both_no_word_class_v_no_interact_BF_3.rds')
 
 # Show:
 
@@ -1235,6 +1246,61 @@ loo_compare(both_no_interact_loo, both_no_icon_loo)
 # No interaction versus word_class:
 
 loo_compare(both_no_interact_loo, both_no_word_class_loo)
+```
+
+### Interpret model
+
+Show the model:
+
+```{r}
+both_interact_mdl
+```
+
+### Posterior probabilities
+
+Compute the posterior probability of an average effect:
+
+```{r}
+hypothesis(both_interact_mdl, 'Intercept > 0')
+```
+
+We still have the logit value that corresponds to the meta-analytic average of non-antonym studies.
+
+```{r}
+logit_val
+plogis(logit_val)
+```
+
+This is the descriptive average. Check that the ideophones are above that:
+
+```{r}
+hypothesis(both_interact_mdl, 'Intercept + word_class_sum3 > 0.1201443')
+```
+
+We can also check against the model average (`mean(posts_int$no_antonyms)` from the meta-analysis script is `55.06998`), and that's gonna be even worse.
+
+```{r}
+# Find the logit value:
+
+p <- 55.06998 / 100
+log(p / (1 -p))
+
+# Check against that:
+
+hypothesis(both_interact_mdl, 'Intercept + word_class_sum3 > 0.2034986')
+```
+
+Compute the posterior probability that the item SD is bigger than the participant SD:
+
+```{r}
+# Extract posterior samples:
+
+both_posts <- as_draws_df(both_interact_mdl) |> 
+  select(sd_unique_id__Intercept, sd_word__Intercept)
+
+# Show how many of one are more than the other:
+
+sum(both_posts$sd_word__Intercept > both_posts$sd_unique_id__Intercept) / nrow(both_posts)
 ```
 
 ## Data and model visualization
@@ -1572,6 +1638,43 @@ ggsave(plot = word_p, filename = '../figures/png/word_posteriors_with_nouns.png'
        width = 12, height = 5)
 ggsave(plot = word_p, filename = '../figures/pdf/word_posteriors_with_nouns.pdf',
        width = 12, height = 5)
+```
+
+## Visualize posteriors of random effects
+
+Kuleshova et al. (2026) discuss how there is more item variability than subject variability. If there is *any* signal in the words themselves, this should be the case here too. Let's make a plot of this:
+
+```{r fig.width = 6, fig.height = 2.6}
+# Plot core:
+
+sd_p <- both_posts |> 
+  pivot_longer(cols = sd_unique_id__Intercept:sd_word__Intercept,
+               names_to = 'sd', values_to = 'estimate') |> 
+  mutate(sd = if_else(sd == 'sd_unique_id__Intercept',
+                      'participant', 'word')) |> 
+  ggplot(aes(x = estimate)) +
+  geom_density(aes(fill = sd), alpha = 0.6)
+
+# Plot core:
+
+sd_p <- sd_p +
+  scale_fill_manual(values = c('burlywood3', 'darkorchid4')) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 15)) +
+  xlab('Logit estimate') +
+  ylab(NULL) +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = 'bold', margin = margin(t = 6))) +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.position = 'none')
+
+sd_p
+ggsave('../figures/pdf/experiment_sd_comparisons.pdf',
+       width = 6, height = 2.8)
+ggsave('../figures/png/experiment_sd_comparisons.png',
+       width = 6, height = 2.8)
 ```
 
 This completes this analysis.
